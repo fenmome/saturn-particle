@@ -330,7 +330,8 @@ export class SaturnEngine {
     this.handInfluence = 0.0;
     this.interactionType = 0.0; // 0.0=none, 1.0=gravity, 2.0=repel
 
-    // Add Saturn Body & Rings (must be initialized after state variables)
+    // Add Saturn Body, Rings & Background Stars (must be initialized after state variables)
+    this.createStarfield();
     this.createSaturn();
     this.createRings(200000); // Default: 200k particles
   }
@@ -365,6 +366,49 @@ export class SaturnEngine {
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(renderScene);
     this.composer.addPass(this.bloomPass);
+  }
+
+  createStarfield() {
+    const starCount = 4000;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(starCount * 3);
+    const colors = new Float32Array(starCount * 3);
+
+    for (let i = 0; i < starCount; i++) {
+      // Distribute stars on a sphere of radius 300 to 500
+      const radius = 300.0 + Math.random() * 200.0;
+      const theta = Math.random() * Math.PI * 2.0;
+      const phi = Math.acos(Math.random() * 2.0 - 1.0);
+
+      positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+      positions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+      positions[i * 3 + 2] = radius * Math.cos(phi);
+
+      // Deep space colors (mix of warm white, cold blue, and soft purple)
+      const r = 0.8 + Math.random() * 0.2;
+      const g = 0.8 + Math.random() * 0.2;
+      const b = 0.95 + Math.random() * 0.05;
+
+      colors[i * 3] = r;
+      colors[i * 3 + 1] = g;
+      colors[i * 3 + 2] = b;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    // Standard Points material with vertex colors
+    const material = new THREE.PointsMaterial({
+      size: 1.2,
+      sizeAttenuation: false,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending
+    });
+
+    this.starfield = new THREE.Points(geometry, material);
+    this.scene.add(this.starfield);
   }
 
   createSaturn() {
@@ -599,6 +643,12 @@ export class SaturnEngine {
     // Slowly rotate Saturn itself
     if (this.saturnMesh) {
       this.saturnMesh.rotation.y = this.uTime * 0.05;
+    }
+
+    // Slowly rotate background starfield for cosmic parallax
+    if (this.starfield) {
+      this.starfield.rotation.y = this.uTime * 0.003;
+      this.starfield.rotation.x = this.uTime * 0.001;
     }
 
     // Apply smooth control transitions
