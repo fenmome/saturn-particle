@@ -151,6 +151,30 @@ export class GestureTracker {
     return openFingersCount >= 4;
   }
 
+  // Check if hand is a fist (fingers folded)
+  isHandFist(landmarks) {
+    const wrist = landmarks[0];
+    const handScale = distance(wrist, landmarks[9]);
+
+    // Check distance from wrist to each finger tip relative to their knuckles
+    const fingerTips = [8, 12, 16, 20]; // index, middle, ring, pinky
+    const fingerBases = [5, 9, 13, 17];
+
+    let closedFingersCount = 0;
+    for (let i = 0; i < 4; i++) {
+      const tipDist = distance(wrist, landmarks[fingerTips[i]]);
+      const baseDist = distance(wrist, landmarks[fingerBases[i]]);
+      
+      // If the tip is closer to the wrist than the knuckle base, finger is closed
+      if (tipDist < baseDist) {
+        closedFingersCount++;
+      }
+    }
+
+    // Hand is a fist if 3 or more fingers are closed
+    return closedFingersCount >= 3;
+  }
+
   // Draw hand landmarks overlay on the monitoring canvas
   drawOverlay(results) {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -172,14 +196,14 @@ export class GestureTracker {
       const isRightHand = results.multiHandedness[i].label === 'Right';
       
       // Select connection color based on hand state
-      const pinchState = this.isHandPinching(landmarks);
       const openState = this.isHandOpen(landmarks);
+      const fistState = this.isHandFist(landmarks);
       
       let color = '#00d2ff'; // default: blue (tracking)
-      if (pinchState.pinched) {
-        color = '#ffaa00'; // orange: pinch
+      if (fistState) {
+        color = '#ff3b30'; // red: fist (zoom out)
       } else if (openState) {
-        color = '#7928ca'; // purple: open palm
+        color = '#7928ca'; // purple: open palm (zoom in)
       }
 
       // Draw skeleton lines
@@ -254,84 +278,61 @@ export class GestureTracker {
     const state = {
       trackingActive: hands && hands.length > 0,
       handCount: hands ? hands.length : 0,
-      gestureType: 'idle', // 'idle', 'rotate', 'zoom', 'gravity'
-      rotationDelta: { x: 0, y: 0 },
-      zoomDelta: 0,
+      gestureType: 'idle', // 'idle', 'zoom_in', 'zoom_out', 'steering'
+      handX: 0.5,         // Proportional steering center X (0 to 1)
+      handY: 0.5,         // Proportional steering center Y (0 to 1)
       activeHandPos: null, // used for gravity attraction position
-      isOpenPalm: false
+      isOpenPalm: false,
+      isFist: false
     };
 
     if (!state.trackingActive) {
-      this.lastPinchPos = null;
-      this.baseZoomDistance = null;
       this.onGestureUpdate(state);
       return;
     }
 
-    // 1. Two-Hand Zoom Gesture
-    if (state.handCount === 2) {
-      const hand1 = hands[0];
-      const hand2 = hands[1];
-      
-      const pinch1 = this.isHandPinching(hand1);
-      const pinch2 = this.isHandPinching(hand2);
+    // Process primary hand
+    const primaryHand = hands[0];
+    const palmCenter = primaryHand[9]; // Middle finger MCP joint represents palm center
+    
+    // Mirror X coordinate because camera preview is mirrored
+    state.handX = 1.0 - palmCenter.x;
+    state.handY = palmCenter.y;
+    state.activeHandPos = palmCenter;
 
-      // If both hands are pinching, we use distance between them to zoom
-      if (pinch1.pinched && pinch2.pinched) {
-        state.gestureType = 'zoom';
-        const currentDist = distance(pinch1.center, pinch2.center);
+    // Detect open palm and fist states
+    const isOpen = this.isHandOpen(primaryHand);
+    const isFist = this.isHandFist(primaryHand);
 
-        if (this.baseZoomDistance === null) {
-          this.baseZoomDistance = currentDist;
-        } else {
-          // Map distance ratio to zoom delta
-          const distRatio = currentDist / this.baseZoomDistance;
-          state.zoomDelta = (distRatio - 1) * this.smoothZoomSpeed;
-        }
-      } else {
-        this.baseZoomDistance = null;
-      }
-    } else {
-      this.baseZoomDistance = null;
+    state.isOpenPalm = isOpen;
+    state.isFist = isFist;
+
+    // Proportional virtual joystick steering deadzone check
+    const dx = state.handX - 0.5;
+    const dy = state.handY - 0.5;
+    const deadzone = 0.08;
+
+    if (isOpen) {
+      state.gestureType = 'zoom_in';
+    } else if (isFist) {
+      state.gestureType = 'zoom_out';
+    } else if (Math.abs(dx) > deadzone || Math.abs(dy) > deadzone) {
+      state.gestureType = 'steering';
     }
 
-    // 2. Single Hand Gestures (Rotate or Gravity)
-    if (state.handCount === 1) {
-      const hand = hands[0];
-      const pinch = this.isHandPinching(hand);
-      const isOpen = this.isHandOpen(hand);
+    // If there is a second hand, let it override zoom/gravity (e.g. hand1 fist, hand2 open -> open wins)
+    if (hands.length === 2) {
+      const secondHand = hands[1];
+      const secondOpen = this.isHandOpen(secondHand);
+      const secondFist = this.isHandFist(secondHand);
 
-      if (pinch.pinched) {
-        state.gestureType = 'rotate';
-        const currentPinchPos = pinch.center;
-
-        if (this.lastPinchPos !== null) {
-          // Calculate movement delta to rotate camera
-          // Mirror horizontal delta since user faces webcam
-          state.rotationDelta.y = -(currentPinchPos.x - this.lastPinchPos.x) * this.smoothRotationSpeed * 300;
-          state.rotationDelta.x = (currentPinchPos.y - this.lastPinchPos.y) * this.smoothRotationSpeed * 250;
-        }
-        this.lastPinchPos = currentPinchPos;
-      } else {
-        this.lastPinchPos = null;
-      }
-
-      if (isOpen) {
-        state.gestureType = 'gravity';
+      if (secondOpen) {
         state.isOpenPalm = true;
-        // Use palm center (landmark 9) as the gravity attractor
-        state.activeHandPos = hand[9];
-      }
-    } else if (state.handCount === 2) {
-      // If two hands, check if any is open to apply gravity
-      const hand1Open = this.isHandOpen(hands[0]);
-      const hand2Open = this.isHandOpen(hands[1]);
-      
-      if (hand1Open || hand2Open) {
-        state.gestureType = 'gravity';
-        state.isOpenPalm = true;
-        // Use the first open hand's palm center as gravity source
-        state.activeHandPos = hand1Open ? hands[0][9] : hands[1][9];
+        state.gestureType = 'zoom_in';
+        state.activeHandPos = secondHand[9];
+      } else if (secondFist && !state.isOpenPalm) {
+        state.isFist = true;
+        state.gestureType = 'zoom_out';
       }
     }
 

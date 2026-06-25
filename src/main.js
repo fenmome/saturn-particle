@@ -36,6 +36,16 @@ document.addEventListener('DOMContentLoaded', () => {
   let saturnEngine = null;
   let gestureTracker = null;
   let animationFrameId = null;
+  
+  // Hand gesture state for continuous rendering
+  let currentGestureState = {
+    trackingActive: false,
+    handX: 0.5,
+    handY: 0.5,
+    isOpenPalm: false,
+    isFist: false,
+    gestureType: 'idle'
+  };
 
   // 1. Simulate Loading progress
   let progress = 0;
@@ -102,6 +112,39 @@ document.addEventListener('DOMContentLoaded', () => {
   // 3. Animation Render Loop
   function startRenderLoop() {
     function tick() {
+      // Apply continuous movement from gesture state inside the render frame
+      if (saturnEngine && currentGestureState.trackingActive) {
+        const state = currentGestureState;
+        
+        // 1. Zoom Control (Open Palm Zoom In / Fist Zoom Out)
+        if (state.gestureType === 'zoom_in') {
+          saturnEngine.targetZoom -= 0.65; // Zoom in speed
+          saturnEngine.targetZoom = Math.max(30, saturnEngine.targetZoom);
+        } else if (state.gestureType === 'zoom_out') {
+          saturnEngine.targetZoom += 0.65; // Zoom out speed
+          saturnEngine.targetZoom = Math.min(130, saturnEngine.targetZoom);
+        }
+        
+        // 2. Proportional Steering (Virtual Joystick based on hand center)
+        const dx = state.handX - 0.5;
+        const dy = state.handY - 0.5;
+        const deadzone = 0.08;
+        const rotateSpeed = 0.015; // Steering sensitivity speed
+
+        if (Math.abs(dx) > deadzone) {
+          // The further from center, the faster it rotates
+          const steerX = dx > 0 ? dx - deadzone : dx + deadzone;
+          saturnEngine.targetRotation.y += steerX * rotateSpeed;
+        }
+        
+        if (Math.abs(dy) > deadzone) {
+          const steerY = dy > 0 ? dy - deadzone : dy + deadzone;
+          saturnEngine.targetRotation.x += steerY * rotateSpeed;
+          // Clamp camera pitch
+          saturnEngine.targetRotation.x = Math.max(-Math.PI / 3.5, Math.min(Math.PI / 3.5, saturnEngine.targetRotation.x));
+        }
+      }
+
       if (saturnEngine) {
         saturnEngine.animate();
       }
@@ -112,51 +155,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 4. Handle Gesture State Updates (callback from GestureTracker)
   function onGestureUpdate(state) {
+    currentGestureState = state;
     if (!saturnEngine) return;
 
     if (state.trackingActive) {
-      // Update UI Status Indicator
       statusIndicator.className = 'status-indicator';
       
-      if (state.gestureType === 'rotate') {
+      if (state.gestureType === 'zoom_in') {
         statusIndicator.classList.add('interacting');
-        statusText.textContent = '手势：旋转环面';
-        
-        // Map delta rotation
-        saturnEngine.targetRotation.y += state.rotationDelta.y;
-        saturnEngine.targetRotation.x += state.rotationDelta.x;
-        // Clamp vertical camera angle to avoid looking upside down
-        saturnEngine.targetRotation.x = Math.max(-Math.PI / 3.5, Math.min(Math.PI / 3.5, saturnEngine.targetRotation.x));
-      
-      } else if (state.gestureType === 'zoom') {
+        statusIndicator.style.backgroundColor = 'var(--accent-blue)';
+        statusIndicator.style.boxShadow = '0 0 12px var(--accent-blue)';
+        statusText.textContent = '手势：张手 (放大中...)';
+      } else if (state.gestureType === 'zoom_out') {
         statusIndicator.classList.add('interacting');
-        statusText.textContent = '手势：缩放中';
-        
-        // Map delta zoom
-        saturnEngine.targetZoom -= state.zoomDelta * 55;
-        // Clamp zoom distance
-        saturnEngine.targetZoom = Math.max(30, Math.min(130, saturnEngine.targetZoom));
-      
-      } else if (state.gestureType === 'gravity') {
+        statusIndicator.style.backgroundColor = 'var(--accent-gold)';
+        statusIndicator.style.boxShadow = '0 0 12px var(--accent-gold)';
+        statusText.textContent = '手势：握拳 (缩小中...)';
+      } else if (state.gestureType === 'steering') {
         statusIndicator.classList.add('interacting');
         statusIndicator.style.backgroundColor = 'var(--accent-purple)';
         statusIndicator.style.boxShadow = '0 0 12px var(--accent-purple)';
-        statusText.textContent = '手势：引力波吸尘';
+        
+        const dx = state.handX - 0.5;
+        const dy = state.handY - 0.5;
+        let direction = '移动';
+        if (Math.abs(dx) > Math.abs(dy)) {
+          direction = dx > 0 ? '右转' : '左转';
+        } else {
+          direction = dy > 0 ? '下俯' : '上仰';
+        }
+        statusText.textContent = `手势：指向 ${direction}`;
       } else {
         statusIndicator.classList.add('tracking');
-        statusText.textContent = '手势就绪（空闲）';
+        statusText.textContent = '手势就绪 (悬停)';
       }
 
-      // Pass hand coordinate to Saturn vertex shader for gravity deformation
+      // Pass palm coordinate to Saturn vertex shader for gravity deformation (attract on open palm)
       saturnEngine.updateHandGravity(state.activeHandPos, true, state.isOpenPalm);
 
     } else {
-      // No hands tracked
       statusIndicator.className = 'status-indicator offline';
       statusIndicator.style.backgroundColor = '';
       statusIndicator.style.boxShadow = '';
       statusText.textContent = '未检测到手掌';
-
+      
       // Turn off gravity forces in shader
       saturnEngine.updateHandGravity(null, false, false);
     }
