@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>星尘之境 - 手势控制土星环粒子效果</title>
+  <link rel="stylesheet" href="./style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
+  
+
+  <!-- On-Screen Debug Console for WebGL & JS errors -->
+  <div id="debug-console" style="position: fixed; bottom: 10px; right: 10px; width: 320px; max-height: 200px; overflow-y: auto; background: rgba(10, 10, 25, 0.9); border: 1px solid rgba(0, 210, 255, 0.3); border-radius: 8px; color: #00d2ff; font-family: monospace; font-size: 10px; padding: 10px; z-index: 9999; pointer-events: auto; display: none; box-shadow: 0 0 15px rgba(0,210,255,0.2);">
+    <div style="font-weight: bold; border-bottom: 1px solid rgba(0, 210, 255, 0.2); padding-bottom: 4px; margin-bottom: 4px; display: flex; justify-content: space-between; font-family: sans-serif;">
+      <span>调试终端 (Debug Console)</span>
+      <span onclick="document.getElementById('debug-console').style.display='none'" style="cursor: pointer; color: #ff3b30;">[关闭]</span>
+    </div>
+    <div id="debug-log-list"></div>
+  </div>
+  <script>
+    const consoleContainer = document.getElementById('debug-console');
+    const logList = document.getElementById('debug-log-list');
+    
+    function logToScreen(msg, isError = false) {
+      consoleContainer.style.display = 'block';
+      const div = document.createElement('div');
+      div.style.color = isError ? '#ff3b30' : '#00d2ff';
+      div.style.marginBottom = '6px';
+      div.style.lineHeight = '1.3';
+      div.style.borderBottom = '1px dashed rgba(255,255,255,0.05)';
+      div.style.paddingBottom = '3px';
+      div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logList.appendChild(div);
+      consoleContainer.scrollTop = consoleContainer.scrollHeight;
+    }
+
+    window.addEventListener('error', (e) => {
+      logToScreen(`Error: ${e.message} at ${e.filename}:${e.lineno}`, true);
+    });
+
+    window.addEventListener('unhandledrejection', (e) => {
+      logToScreen(`Promise Error: ${e.reason}`, true);
+    });
+
+    // Intercept console.error
+    const originalConsoleError = console.error;
+    console.error = function(...args) {
+      originalConsoleError.apply(console, args);
+      logToScreen(args.join(' '), true);
+    };
+
+    // Intercept console.warn
+    const originalConsoleWarn = console.warn;
+    console.warn = function(...args) {
+      originalConsoleWarn.apply(console, args);
+      logToScreen(args.join(' '), false);
+    };
+  </script>
+
+  <!-- MediaPipe Hands CDN Scripts -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <!-- 3D 渲染 Canvas -->
+  <canvas id="webgl-canvas"></canvas>
+
+  <!-- 全局加载动画 / 进入页面 -->
+  <div id="loader">
+    <div class="loader-content">
+      <h1 class="glow-text">SATURN RING</h1>
+      <p class="subtitle">粒子星尘手势控制系统</p>
+      <div class="progress-bar-container">
+        <div class="progress-bar" id="load-progress"></div>
+      </div>
+      <p class="loader-status">正在初始化 3D 引擎...</p>
+      <button id="start-btn" class="glow-btn" style="display: none;">开启星尘之旅</button>
+    </div>
+  </div>
+
+  <!-- 隐藏的摄像头视频源 -->
+  <video id="webcam" autoplay playsinline style="display: none;"></video>
+
+  <!-- 主控制面板 (玻璃拟态) -->
+  <div id="control-panel" class="glass-card">
+    <header>
+      <h2 class="glow-text">控制中心</h2>
+      <span class="version">v1.2.0</span>
+    </header>
+
+    <div class="control-group">
+      <h3>手势追踪状态</h3>
+      <div id="gesture-status" class="status-container">
+        <span class="status-indicator offline"></span>
+        <span class="status-text">未检测到手势</span>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <h3>粒子系统配置</h3>
+      <div class="slider-wrapper">
+        <label for="particle-count">粒子数量: <span id="val-particle-count">200K</span></label>
+        <input type="range" id="particle-count" min="50000" max="300000" step="10000" value="200000">
+      </div>
+      <div class="slider-wrapper">
+        <label for="particle-size">粒子大小: <span id="val-particle-size">1.5</span></label>
+        <input type="range" id="particle-size" min="0.5" max="4.0" step="0.1" value="1.5">
+      </div>
+      <div class="slider-wrapper">
+        <label for="orbit-speed">自转速度: <span id="val-orbit-speed">1.0x</span></label>
+        <input type="range" id="orbit-speed" min="0" max="3.0" step="0.1" value="1.0">
+      </div>
+    </div>
+
+    <div class="control-group">
+      <h3>视觉效果调节</h3>
+      <div class="slider-wrapper">
+        <label for="bloom-strength">辉光强度: <span id="val-bloom-strength">1.2</span></label>
+        <input type="range" id="bloom-strength" min="0.0" max="3.0" step="0.1" value="1.2">
+      </div>
+      <div class="slider-wrapper">
+        <label for="bloom-radius">发散半径: <span id="val-bloom-radius">0.5</span></label>
+        <input type="range" id="bloom-radius" min="0.0" max="2.0" step="0.1" value="0.5">
+      </div>
+    </div>
+
+    <div class="button-row">
+      <button id="btn-reset" class="action-btn">重置视角</button>
+      <button id="btn-toggle-cam" class="action-btn">启用手势控制</button>
+    </div>
+  </div>
+
+  <!-- 悬浮摄像头预览窗口 -->
+  <div id="camera-preview-container" class="glass-card" style="display: none;">
+    <canvas id="camera-overlay-canvas"></canvas>
+    <div class="preview-title">手势监控</div>
+    <div id="camera-hint">请向摄像头展示您的手掌</div>
+  </div>
+
+  <!-- 浮动操作手势指引 -->
+  <div id="gesture-guide" class="glass-card">
+    <div class="guide-toggle">📖 操作说明</div>
+    <div class="guide-content">
+      <div class="guide-item">
+        <div class="guide-icon">👌</div>
+        <div class="guide-text">
+          <h4>单手捏合 (旋转)</h4>
+          <p>大拇指与食指捏合，移动手掌旋转土星环视角。</p>
+        </div>
+      </div>
+      <div class="guide-item">
+        <div class="guide-icon">↔️</div>
+        <div class="guide-text">
+          <h4>双手距离 (缩放)</h4>
+          <p>伸出两只手并同时捏合，拉远或拉近双手控制放大缩小。</p>
+        </div>
+      </div>
+      <div class="guide-item">
+        <div class="guide-icon">🖐️</div>
+        <div class="guide-text">
+          <h4>张开手掌 (引力)</h4>
+          <p>张开手掌对准环面，会在手心位置产生引力，吸引尘埃粒子。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 遮罩提醒：没有摄像头权限 -->
+  <div id="camera-error" class="modal" style="display: none;">
+    <div class="modal-content glass-card">
+      <h3>⚠️ 摄像头权限请求</h3>
+      <p>本应用需要使用摄像头来识别您的手势。请允许浏览器访问您的摄像头，然后刷新页面重试。</p>
+      <button id="btn-retry-camera" class="glow-btn">重试连接</button>
+      <button id="btn-use-mouse" class="action-btn" style="margin-left: 10px; padding: 12px 24px; border-radius: 30px;">使用鼠标浏览</button>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
